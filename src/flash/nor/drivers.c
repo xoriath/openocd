@@ -45,6 +45,7 @@ static const struct flash_driver * const flash_drivers[] = {
 	&fespi_flash,
 	&fm3_flash,
 	&fm4_flash,
+	&hefc_flash,
 	&hpm_xpi_flash,
 	&jtagspi_flash,
 	&kinetis_flash,
