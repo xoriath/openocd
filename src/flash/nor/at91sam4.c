@@ -172,6 +172,13 @@ struct sam4_chip {
 	struct sam4_chip_details details;
 	struct target *target;
 	struct sam4_cfg cfg;
+	/* Optional chip-name override: if non-NULL, sam4_probe() uses the named
+	 * entry from all_sam4_details[] directly instead of matching by
+	 * CHIPID_CIDR.  Pointer into argv storage; lifetime matches the session.
+	 * Used for parts (e.g. PIC32CZ-CA70/MC70, PIC32CX-MT) where the CHIPID
+	 * register lives at a non-standard address or whose reset CIDR value has
+	 * not yet been confirmed. */
+	const char *chip_name_override;
 };
 
 
@@ -1420,6 +1427,144 @@ static const struct sam4_chip_details all_sam4_details[] = {
 		}
 	},
 
+	/*
+	 * Microchip PIC32CZ-CA70 / PIC32CZ-MC70 / PIC32CX-MT
+	 *
+	 * These devices use the same EEFC command protocol as the classic SAM4
+	 * family: FCR/FSR/FRR registers, unlock key 0x5A000000, and the full
+	 * FCMD command set (WP/WPL/EWP/EWPL/EA/EPA/SLB/CLB/GLB/SFB/CFB/GFB/
+	 * STUI/SPUI) already defined and implemented by this driver.  Microchip's
+	 * newer "GPNVM" naming (GGPB/SGPB/CGPB) maps identically to this
+	 * driver's existing GFB/SFB/CFB fuse-bit commands — no new command codes
+	 * are needed.
+	 *
+	 * chip_name_override is required for these three parts because their
+	 * CHIPID register lives at 0x400e0940 (PIC32CZ-CA70/MC70) or is not yet
+	 * probed at all (PIC32CX-MT), while sam4_probe() reads CHIPID_CIDR from
+	 * the classic SAM4 address 0x400E0740.  Supply the chip name as the
+	 * optional 8th argument to "flash bank", e.g.:
+	 *   flash bank $n at91sam4 0x00400000 0 0 0 $t PIC32CZ-CA70
+	 * The override skips the CHIPID_CIDR read/match and loads flash geometry
+	 * directly from the named table entry below.
+	 */
+
+	/* PIC32CZ-CA70: Cortex-M7, 2 MB internal flash at 0x00400000,
+	 * 512 B page, 8192 B sector (16 pages).  CHIPID register at 0x400e0940. */
+	{
+		.chipid_cidr    = 0xA1AF0E00,
+		.name           = "PIC32CZ-CA70",
+		.total_flash_size     = 2048 * 1024,
+		.total_sram_size      = 512 * 1024,	/* CIDR SRAMSIZE field = 0xF */
+		.n_gpnvms       = 2,
+		.n_banks        = 1,
+		{
+/*		.bank[0] = {*/
+		  {
+			.probed = false,
+			.chip  = NULL,
+			.bank  = NULL,
+			.bank_number = 0,
+			.base_address = FLASH_BANK_BASE_S,
+			.controller_address = 0x400e0c00,
+			.flash_wait_states = 5,
+			.present = true,
+			.size_bytes =  2048 * 1024,
+			.nsectors   =  256,		/* 2 MB / 8192 */
+			.sector_size = 8192,
+			.page_size   = 512,
+		  },
+/*		.bank[1] = {*/
+		  {
+			.present = false,
+			.probed = false,
+			.bank_number = 1,
+		  },
+		},
+	},
+
+	/* PIC32CZ-MC70: Cortex-M7, same flash geometry and EFC base as CA70,
+	 * but a distinct CIDR (0xA1BF0E00 vs CA70's 0xA1AF0E00). */
+	{
+		.chipid_cidr    = 0xA1BF0E00,
+		.name           = "PIC32CZ-MC70",
+		.total_flash_size     = 2048 * 1024,
+		.total_sram_size      = 512 * 1024,	/* CIDR SRAMSIZE field = 0xF */
+		.n_gpnvms       = 2,
+		.n_banks        = 1,
+		{
+/*		.bank[0] = {*/
+		  {
+			.probed = false,
+			.chip  = NULL,
+			.bank  = NULL,
+			.bank_number = 0,
+			.base_address = FLASH_BANK_BASE_S,
+			.controller_address = 0x400e0c00,
+			.flash_wait_states = 5,
+			.present = true,
+			.size_bytes =  2048 * 1024,
+			.nsectors   =  256,		/* 2 MB / 8192 */
+			.sector_size = 8192,
+			.page_size   = 512,
+		  },
+/*		.bank[1] = {*/
+		  {
+			.present = false,
+			.probed = false,
+			.bank_number = 1,
+		  },
+		},
+	},
+
+	/* PIC32CX-MT: dual-plane SEFC (SEFC0/SEFC1), two flash banks:
+	 *   IFLASH0: base=0x00400000, size=512 KB, SEFC0=0x460E0000
+	 *   IFLASH1: base=0x00480000, size=512 KB, SEFC1=0x460E2000
+	 * sector = 8 pages x 512 B = 4096 B.  CIDR not yet known; chip-name
+	 * override required.  RAM: MTC/MTSH add IRAM1(32KB)+IRAM2(16KB) on top
+	 * of the common 256 KB IRAM0 modeled here (not modeled separately).
+	 * Bank 0: flash bank $n at91sam4 0x00400000 ... $t PIC32CX-MT
+	 * Bank 1: flash bank $n at91sam4 0x00480000 ... $t PIC32CX-MT */
+	{
+		.chipid_cidr    = 0,
+		.name           = "PIC32CX-MT",
+		.total_flash_size     = 1024 * 1024,
+		.total_sram_size      = 256 * 1024,
+		.n_gpnvms       = 3,
+		.n_banks        = 2,
+/*		.bank[0] = { */
+		{
+			{
+				.probed = false,
+				.chip  = NULL,
+				.bank  = NULL,
+				.bank_number = 0,
+				.base_address = FLASH_BANK_BASE_S,
+				.controller_address = 0x460E0000,	/* SEFC0 */
+				.flash_wait_states = 5,
+				.present = true,
+				.size_bytes =  512 * 1024,
+				.nsectors   =  128,	/* 512 KB / 4096 */
+				.sector_size = 4096,
+				.page_size   = 512,
+			},
+/*		.bank[1] = { */
+			{
+				.probed = false,
+				.chip  = NULL,
+				.bank  = NULL,
+				.bank_number = 1,
+				.base_address = FLASH_BANK1_BASE_1024K_SD,
+				.controller_address = 0x460E2000,	/* SEFC1 */
+				.flash_wait_states = 5,
+				.present = true,
+				.size_bytes =  512 * 1024,
+				.nsectors   =  128,	/* 512 KB / 4096 */
+				.sector_size = 4096,
+				.page_size   = 512,
+			},
+		},
+	},
+
 	/* terminate */
 	{
 		.chipid_cidr    = 0,
@@ -2528,6 +2673,26 @@ FLASH_BANK_COMMAND_HANDLER(sam4_flash_bank_command)
 		return ERROR_FAIL;
 	}
 
+	/* Optional 8th argument: chip-name override for parts where CHIPID_CIDR
+	 * auto-detection is not functional (e.g. PIC32CZ-CA70, PIC32CZ-MC70,
+	 * PIC32CX-MT).  The string must match the .name field of one of the
+	 * entries in all_sam4_details[].  When provided, sam4_probe() skips the
+	 * hardware CHIPID_CIDR read/match entirely and uses the named entry's
+	 * geometry.  If this argument is absent, existing auto-probe-by-CIDR
+	 * behaviour is completely unchanged. */
+	if (CMD_ARGC == 8) {
+		const struct sam4_chip_details *d = all_sam4_details;
+		while (d->name && strcmp(d->name, CMD_ARGV[7]) != 0)
+			d++;
+		if (!d->name) {
+			LOG_ERROR("at91sam4: unknown chip-name override '%s'; "
+				"must match a .name field in all_sam4_details[]",
+				CMD_ARGV[7]);
+			return ERROR_FAIL;
+		}
+		chip->chip_name_override = CMD_ARGV[7];
+	}
+
 	/* we initialize after probing. */
 	return ERROR_OK;
 }
@@ -2557,23 +2722,44 @@ static int sam4_get_details(struct sam4_bank_private *private)
 
 	LOG_DEBUG("Begin");
 	details = all_sam4_details;
-	while (details->name) {
-		/* Compare cidr without version bits */
-		if (details->chipid_cidr == (private->chip->cfg.CHIPID_CIDR & 0xFFFFFFE0))
-			break;
-		else
+
+	if (private->chip->chip_name_override) {
+		/* Chip-name override: find entry by name, bypassing CHIPID_CIDR
+		 * hardware matching.  Used for parts where the CHIPID register
+		 * lives at a non-standard address (e.g. PIC32CZ-CA70 uses
+		 * 0x400e0940 vs the classic 0x400E0740) or whose reset CIDR value
+		 * has not yet been confirmed. */
+		while (details->name &&
+				strcmp(details->name, private->chip->chip_name_override) != 0)
 			details++;
-	}
-	if (!details->name) {
-		LOG_ERROR("SAM4 ChipID 0x%08x not found in table (perhaps you can ID this chip?)",
-			(unsigned int)(private->chip->cfg.CHIPID_CIDR));
-		/* Help the victim, print details about the chip */
-		LOG_INFO("SAM4 CHIPID_CIDR: 0x%08" PRIx32 " decodes as follows",
-			private->chip->cfg.CHIPID_CIDR);
-		sam4_explain_chipid_cidr(private->chip);
-		return ERROR_FAIL;
+		if (!details->name) {
+			LOG_ERROR("at91sam4: chip-name override '%s' not found in "
+				"all_sam4_details[] table",
+				private->chip->chip_name_override);
+			return ERROR_FAIL;
+		}
+		LOG_INFO("at91sam4: using chip-name override '%s'; CHIPID_CIDR "
+			"auto-detect bypassed — geometry is user-asserted via "
+			"flash bank command argument", details->name);
 	} else {
-		LOG_DEBUG("SAM4 Found chip %s, CIDR 0x%08" PRIx32, details->name, details->chipid_cidr);
+		while (details->name) {
+			/* Compare cidr without version bits */
+			if (details->chipid_cidr == (private->chip->cfg.CHIPID_CIDR & 0xFFFFFFE0))
+				break;
+			else
+				details++;
+		}
+		if (!details->name) {
+			LOG_ERROR("SAM4 ChipID 0x%08x not found in table (perhaps you can ID this chip?)",
+				(unsigned int)(private->chip->cfg.CHIPID_CIDR));
+			/* Help the victim, print details about the chip */
+			LOG_INFO("SAM4 CHIPID_CIDR: 0x%08" PRIx32 " decodes as follows",
+				private->chip->cfg.CHIPID_CIDR);
+			sam4_explain_chipid_cidr(private->chip);
+			return ERROR_FAIL;
+		} else {
+			LOG_DEBUG("SAM4 Found chip %s, CIDR 0x%08" PRIx32, details->name, details->chipid_cidr);
+		}
 	}
 
 	/* DANGER: THERE ARE DRAGONS HERE */
@@ -2627,6 +2813,51 @@ static int sam4_info(struct flash_bank *bank, struct command_invocation *cmd)
 	return ERROR_OK;
 }
 
+/**
+ * Read live flash geometry from the EEFC "Get Flash Descriptor" (GETD)
+ * command instead of trusting the hardcoded all_sam4_details[] table.
+ * The EEFC latches a sequence of words that must be read back from FRR
+ * in order: FL_ID, FL_SIZE, FL_PAGE_SIZE, FL_NB_PLANE, FL_PLANE[0..n-1],
+ * FL_NB_LOCK, FL_LOCK[0..m-1].  All flash lock regions are equally sized,
+ * so FL_LOCK[0] is used as the erase-sector size.
+ */
+static int sam4_efc_getd(struct sam4_bank_private *private,
+		uint32_t *flash_size, uint32_t *page_size, uint32_t *lock_region_size)
+{
+	int r;
+	uint32_t v, nplanes, nlocks;
+
+	r = efc_start_command(private, AT91C_EFC_FCMD_GETD, 0);
+	if (r != ERROR_OK)
+		return r;
+
+	r = efc_get_result(private, &v);            /* FL_ID, unused */
+	if (r != ERROR_OK)
+		return r;
+	r = efc_get_result(private, flash_size);    /* FL_SIZE */
+	if (r != ERROR_OK)
+		return r;
+	r = efc_get_result(private, page_size);     /* FL_PAGE_SIZE */
+	if (r != ERROR_OK)
+		return r;
+
+	r = efc_get_result(private, &nplanes);      /* FL_NB_PLANE */
+	if (r != ERROR_OK)
+		return r;
+	for (uint32_t i = 0; i < nplanes; i++) {
+		r = efc_get_result(private, &v);        /* FL_PLANE[i], unused */
+		if (r != ERROR_OK)
+			return r;
+	}
+
+	r = efc_get_result(private, &nlocks);       /* FL_NB_LOCK */
+	if (r != ERROR_OK)
+		return r;
+	if (nlocks == 0 || !lock_region_size)
+		return ERROR_OK;
+	return efc_get_result(private, lock_region_size); /* FL_LOCK[0] */
+}
+
 static int sam4_probe(struct flash_bank *bank)
 {
 	int r;
@@ -2645,17 +2876,55 @@ static int sam4_probe(struct flash_bank *bank)
 		return ERROR_FAIL;
 	}
 
-	r = sam4_read_all_regs(private->chip);
-	if (r != ERROR_OK)
-		return r;
+	if (private->chip->chip_name_override) {
+		/* Chip-name override active: skip the SAM4 hardware register reads
+		 * (CHIPID_CIDR, PMC clock registers).  These parts may have the
+		 * CHIPID at a different address and PMC layout that differs from
+		 * the classic SAM4 map, so reading the SAM4 register set would
+		 * either fail or return meaningless values.  On the first probe,
+		 * load flash geometry by name lookup; on re-probe the details are
+		 * already populated — nothing more to do here. */
+		if (!private->chip->probed) {
+			r = sam4_get_details(private);
+			if (r != ERROR_OK)
+				return r;
 
-	LOG_DEBUG("Here");
-	if (private->chip->probed)
-		r = sam4_get_info(private->chip);
-	else
-		r = sam4_get_details(private);
-	if (r != ERROR_OK)
-		return r;
+			/* The EEFC on these parts still responds to GETD, so read
+			 * the real flash size/page size/sector size from hardware
+			 * and override the table's values instead of trusting them
+			 * blindly. */
+			uint32_t flash_size, page_size, lock_region_size;
+			r = sam4_efc_getd(private, &flash_size, &page_size, &lock_region_size);
+			if (r == ERROR_OK && flash_size && page_size) {
+				if (flash_size != private->size_bytes || page_size != private->page_size)
+					LOG_INFO("at91sam4: EEFC GETD reports %" PRIu32
+						" byte flash, %" PRIu32
+						" byte pages (table said %u/%u)",
+						flash_size, page_size,
+						private->size_bytes, private->page_size);
+				private->size_bytes = flash_size;
+				private->page_size = page_size;
+				if (lock_region_size) {
+					private->sector_size = lock_region_size;
+					private->nsectors = flash_size / lock_region_size;
+				}
+			} else {
+				LOG_DEBUG("at91sam4: EEFC GETD failed; using table geometry");
+			}
+		}
+	} else {
+		r = sam4_read_all_regs(private->chip);
+		if (r != ERROR_OK)
+			return r;
+
+		LOG_DEBUG("Here");
+		if (private->chip->probed)
+			r = sam4_get_info(private->chip);
+		else
+			r = sam4_get_details(private);
+		if (r != ERROR_OK)
+			return r;
+	}
 
 	/* update the flash bank size */
 	for (unsigned int x = 0; x < SAM4_MAX_FLASH_BANKS; x++) {
