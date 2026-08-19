@@ -25,9 +25,28 @@
 #define SAMD_DSU			0x41002000	/* Device Service Unit */
 #define SAMD_NVMCTRL		0x41004000	/* Non-volatile memory controller */
 
-#define SAMD_DSU_STATUSA        1               /* DSU status register */
+#define SAMD_DSU_STATUSA	1		/* STATUS A register, byte */
+#define SAMD_DSU_STATUSB	2		/* STATUS B register, byte */
 #define SAMD_DSU_DID		0x18		/* Device ID register */
 #define SAMD_DSU_CTRL_EXT	0x100		/* CTRL register, external access */
+/* DSU boot-ROM mailbox registers -- SAML10/L11 only (Cortex-M23) */
+#define SAMD_DSU_BCC0		0x20		/* Boot Communication Channel 0, 32-bit */
+#define SAMD_DSU_BCC1		0x24		/* Boot Communication Channel 1, 32-bit */
+/* DSU STATUSA bits */
+#define SAMD_DSU_STATUSA_CRSTEXT	0x02	/* CPU Reset Phase Extension active */
+/* DSU STATUSB bits */
+#define SAMD_DSU_STATUSB_DAL_MASK	0x03	/* Debug Access Level field */
+#define SAMD_DSU_STATUSB_BOOTROM	0x80	/* Boot ROM active / BCC1 has reply */
+/* BCC debugger command codes (values from sequences.xml ResetExtension) */
+#define SAMD_DEBUGGER_CMD_EXIT		0x444247AAUL
+#define SAMD_DEBUGGER_CMD_IMODE		0x44424755UL
+#define SAMD_DEBUGGER_CMD_CHIPERASE	0x444247E3UL
+/* BCC1 reply codes */
+#define SAMD_BCC1_REPLY_OK		0xEC000039UL
+#define SAMD_BCC1_REPLY_LOCKED		0xEC000022UL
+#define SAMD_BCC1_REPLY_IMODE_OK	0xEC000020UL
+#define SAMD_BCC1_REPLY_ERASE_BUSY	0xEC000024UL
+#define SAMD_BCC1_REPLY_ERASE_OK	0xEC000021UL
 
 #define SAMD_NVMCTRL_CTRLA		0x00	/* NVM control A register */
 #define SAMD_NVMCTRL_CTRLB		0x04	/* NVM control B register */
@@ -70,6 +89,16 @@
 #define SAMD_SERIES_10		0x02
 #define SAMD_SERIES_11		0x03
 #define SAMD_SERIES_09		0x04
+
+/* Cortex-M23 processor ID (SAML10/L11 family) */
+#define SAMD_PROCESSOR_M23	0x02
+/* Series identifiers for SAM L10/L11 (under FAMILY_L + PROCESSOR_M23).
+ * Note: SAMD_SERIES_L11 (0x03) and SAMD_SERIES_L10 (0x04) happen to alias
+ * SAMD_SERIES_11 (0x03) and SAMD_SERIES_09 (0x04) numerically, but there is
+ * no collision because samd_find_family() matches the full (processor, family,
+ * series) triple. */
+#define SAMD_SERIES_L11		0x03	/* SAM L11, under FAMILY_L + PROCESSOR_M23 */
+#define SAMD_SERIES_L10		0x04	/* SAM L10, under FAMILY_L + PROCESSOR_M23 */
 
 /* Device ID macros */
 #define SAMD_GET_PROCESSOR(id) (id >> 28)
@@ -264,6 +293,26 @@ static const struct samd_part saml22_parts[] = {
 	{ 0x0C, "SAML22G16A", 64, 8 },
 };
 
+/* Known SAML10 parts (Cortex-M23 with TrustZone-M). */
+static const struct samd_part saml10_parts[] = {
+	{ 0x00, "SAM L10E16A", 64, 16 },
+	{ 0x01, "SAM L10E15A", 32, 8  },
+	{ 0x02, "SAM L10E14A", 16, 4  },
+	{ 0x03, "SAM L10D16A", 64, 16 },
+	{ 0x04, "SAM L10D15A", 32, 8  },
+	{ 0x05, "SAM L10D14A", 16, 4  },
+};
+
+/* Known SAML11 parts (Cortex-M23 with TrustZone-M). */
+static const struct samd_part saml11_parts[] = {
+	{ 0x00, "SAM L11E16A", 64, 16 },
+	{ 0x01, "SAM L11E15A", 32, 8  },
+	{ 0x02, "SAM L11E14A", 16, 8  },
+	{ 0x03, "SAM L11D16A", 64, 16 },
+	{ 0x04, "SAM L11D15A", 32, 8  },
+	{ 0x05, "SAM L11D14A", 16, 8  },
+};
+
 /* Known SAMC20 parts. */
 static const struct samd_part samc20_parts[] = {
 	{ 0x00, "SAMC20J18A", 256, 32 },
@@ -341,6 +390,14 @@ static const struct samd_family samd_families[] = {
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_21,
 		samc21_parts, ARRAY_SIZE(samc21_parts),
 		0xFFFF03FFFC01FF77ULL },
+	/* TODO: verify user-row reserved-bit mask for SAML10/L11 (UROW/BOCOR split
+	 * not yet modeled -- reusing L/C-family mask as a conservative placeholder) */
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_L10,
+		saml10_parts, ARRAY_SIZE(saml10_parts),
+		0xFFFF03FFFC01FF77ULL },
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_L11,
+		saml11_parts, ARRAY_SIZE(saml11_parts),
+		0xFFFF03FFFC01FF77ULL },
 };
 
 struct samd_info {
@@ -350,6 +407,7 @@ struct samd_info {
 	int prot_block_size;
 
 	bool probed;
+	bool has_bootrom_dal;	/* true for SAML10/L11 (Cortex-M23): needs BCC handshake */
 	struct target *target;
 };
 
@@ -495,6 +553,13 @@ static int samd_probe(struct flash_bank *bank)
 
 	/* Done */
 	chip->probed = true;
+
+	/* Record whether this target requires the DSU boot-ROM DAL handshake */
+	{
+		const struct samd_family *family = samd_find_family(id);
+		chip->has_bootrom_dal = (family != NULL &&
+				family->processor == SAMD_PROCESSOR_M23);
+	}
 
 	LOG_INFO("SAMD MCU: %s (%" PRIu32 "KB Flash, %" PRIu32 "KB RAM)", part->name,
 			part->flash_kb, part->ram_kb);
@@ -939,6 +1004,298 @@ free_pb:
 	return res;
 }
 
+/* TODO: SAML10/L11 items not yet implemented:
+ *  - DAL-aware NVMCTRL base-address selection (NVMCTRL sits at a different
+ *    offset in secure vs non-secure alias space on L11)
+ *  - ClearRAMExecuteNever handling after reset-extension exit
+ *  - UROW / BOCOR dual-bank user-row modeling for L11 TrustZone fuses
+ *  - Refine reserved-bit mask in samd_families[] for L10/L11
+ */
+
+/**
+ * Trigger the SAML10/L11 DSU reset-phase-extension entry.
+ *
+ * The boot ROM enters reset-extension mode when it detects >= 4 SWCLK edges
+ * while nRESET is asserted (sequences.xml "ResetExtension").  We assert SRST
+ * via the adapter, which causes the SWD layer to issue a reconnect sequence
+ * (line-reset + JTAG-to-SWD switch + read IDCODE) that supplies the required
+ * clock edges.
+ *
+ * NOTE: exact per-pulse SWCLK control while reset is held is not achievable
+ * through jtag_add_reset() alone; the normal SWD reconnect traffic provides
+ * sufficient edges for most J-Link/CMSIS-DAP adapters.  Hardware validation
+ * is needed; a follow-up change should add adapter-level explicit SWCLK pulse
+ * support for strict sequences.xml compliance.
+ */
+static int samdl1x_reset_extension(struct target *target)
+{
+	int retval;
+
+	LOG_DEBUG("SAML10/L11: asserting SRST for reset-extension handshake");
+
+	jtag_add_reset(0, 1);	/* assert SRST */
+	retval = jtag_execute_queue();
+	if (retval != ERROR_OK)
+		LOG_DEBUG("SAML10/L11: failed to assert SRST (%d) -- continuing", retval);
+
+	alive_sleep(5);
+
+	jtag_add_reset(0, 0);	/* deassert SRST */
+	retval = jtag_execute_queue();
+	if (retval != ERROR_OK)
+		LOG_DEBUG("SAML10/L11: failed to deassert SRST (%d) -- continuing", retval);
+
+	alive_sleep(10);
+
+	return ERROR_OK;
+}
+
+/**
+ * Complete the SAML10/L11 reset-extension exit via DSU BCC mailbox handshake.
+ * Implements sequences.xml "ExitResetExtension".
+ *
+ * On success, *dal_out (if non-NULL) is set to the DAL value read from STATUSB.
+ */
+static int samdl1x_exit_reset_extension(struct target *target, uint8_t *dal_out)
+{
+	int retval;
+	uint8_t statusa, statusb;
+	uint32_t bcc1;
+	int timeout_ms;
+	int64_t ts_start;
+
+	/* 1. Read STATUSA */
+	retval = target_read_u8(target, SAMD_DSU + SAMD_DSU_STATUSA, &statusa);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read DSU STATUSA");
+		return retval;
+	}
+
+	/* 2. Verify CRSTEXT is set */
+	if (!(statusa & SAMD_DSU_STATUSA_CRSTEXT)) {
+		LOG_ERROR("SAML10/L11: could not enter reset extension (CRSTEXT not set)");
+		return ERROR_FAIL;
+	}
+
+	/* 3. W1C clear CRSTEXT so the boot ROM continues */
+	retval = target_write_u8(target, SAMD_DSU + SAMD_DSU_STATUSA,
+			SAMD_DSU_STATUSA_CRSTEXT);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to clear CRSTEXT in DSU STATUSA");
+		return retval;
+	}
+
+	/* 4. Allow boot ROM to advance (5 ms) */
+	alive_sleep(5);
+
+	/* 5. Check for boot-ROM-active status and user-page validation result */
+	retval = target_read_u8(target, SAMD_DSU + SAMD_DSU_STATUSB, &statusb);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read DSU STATUSB");
+		return retval;
+	}
+
+	if (statusb & SAMD_DSU_STATUSB_BOOTROM) {
+		retval = target_read_u32(target, SAMD_DSU + SAMD_DSU_BCC1, &bcc1);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("SAML10/L11: failed to read BCC1");
+			return retval;
+		}
+		if (bcc1 != 0) {
+			LOG_ERROR("SAML10/L11: User page validation failed "
+				"(BCC1=0x%08" PRIx32 ")", bcc1);
+			return ERROR_FAIL;
+		}
+	}
+
+	/* 6. Send EXIT command via BCC0 */
+	retval = target_write_u32(target, SAMD_DSU + SAMD_DSU_BCC0,
+			SAMD_DEBUGGER_CMD_EXIT);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to write EXIT command to BCC0");
+		return retval;
+	}
+
+	/* 7. Poll STATUSB BOOTROM bit until set (boot ROM has placed reply in BCC1) */
+	timeout_ms = 500;
+	ts_start = timeval_ms();
+	do {
+		retval = target_read_u8(target, SAMD_DSU + SAMD_DSU_STATUSB, &statusb);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("SAML10/L11: failed to read DSU STATUSB");
+			return retval;
+		}
+		if (statusb & SAMD_DSU_STATUSB_BOOTROM)
+			break;
+		keep_alive();
+	} while (timeval_ms() - ts_start < timeout_ms);
+
+	if (!(statusb & SAMD_DSU_STATUSB_BOOTROM)) {
+		LOG_ERROR("SAML10/L11: timeout waiting for boot ROM reply after EXIT command");
+		return ERROR_FAIL;
+	}
+
+	/* 8. Read and validate BCC1 reply */
+	retval = target_read_u32(target, SAMD_DSU + SAMD_DSU_BCC1, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read BCC1 reply");
+		return retval;
+	}
+
+	if (bcc1 == SAMD_BCC1_REPLY_LOCKED) {
+		LOG_ERROR("SAML10/L11: Chip is locked (BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+	if (bcc1 != SAMD_BCC1_REPLY_OK) {
+		LOG_ERROR("SAML10/L11: Boot validation failed "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 9. Halt the core */
+	retval = target_write_u32(target, DCB_DHCSR, DBGKEY | C_HALT | C_DEBUGEN);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to write DHCSR to halt core");
+		return retval;
+	}
+
+	/* 10. Read DAL from STATUSB */
+	retval = target_read_u8(target, SAMD_DSU + SAMD_DSU_STATUSB, &statusb);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read DSU STATUSB for DAL");
+		return retval;
+	}
+
+	uint8_t dal = statusb & SAMD_DSU_STATUSB_DAL_MASK;
+	if (dal_out)
+		*dal_out = dal;
+	LOG_INFO("SAML10/L11 DAL=%u", (unsigned int)dal);
+
+	return ERROR_OK;
+}
+
+/**
+ * Assert reset-extension and then exit via BCC handshake (park state).
+ * Combines samdl1x_reset_extension() + samdl1x_exit_reset_extension().
+ */
+static int samdl1x_reset_to_park(struct target *target, uint8_t *dal_out)
+{
+	int retval = samdl1x_reset_extension(target);
+	if (retval != ERROR_OK)
+		return retval;
+	return samdl1x_exit_reset_extension(target, dal_out);
+}
+
+/**
+ * Chip-erase a SAML10/L11 via the DSU boot-ROM BCC mailbox.
+ * Implements sequences.xml "FlashEraseChip".
+ */
+static int samdl1x_chip_erase(struct target *target)
+{
+	int retval;
+	uint8_t statusa;
+	uint32_t bcc1;
+	int timeout_ms;
+	int64_t ts_start;
+
+	/* 1. Enter reset extension */
+	retval = samdl1x_reset_extension(target);
+	if (retval != ERROR_OK)
+		return retval;
+
+	/* 2. Read STATUSA, verify CRSTEXT is set */
+	retval = target_read_u8(target, SAMD_DSU + SAMD_DSU_STATUSA, &statusa);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read DSU STATUSA");
+		return retval;
+	}
+	if (!(statusa & SAMD_DSU_STATUSA_CRSTEXT)) {
+		LOG_ERROR("SAML10/L11: could not enter reset extension (CRSTEXT not set)");
+		return ERROR_FAIL;
+	}
+
+	/* 3. W1C clear CRSTEXT, delay 5 ms */
+	retval = target_write_u8(target, SAMD_DSU + SAMD_DSU_STATUSA,
+			SAMD_DSU_STATUSA_CRSTEXT);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to clear CRSTEXT");
+		return retval;
+	}
+	alive_sleep(5);
+
+	/* 4. Enter interactive mode */
+	retval = target_write_u32(target, SAMD_DSU + SAMD_DSU_BCC0,
+			SAMD_DEBUGGER_CMD_IMODE);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to write IMODE command to BCC0");
+		return retval;
+	}
+	retval = target_read_u32(target, SAMD_DSU + SAMD_DSU_BCC1, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to read BCC1 after IMODE command");
+		return retval;
+	}
+	if (bcc1 != SAMD_BCC1_REPLY_IMODE_OK) {
+		LOG_ERROR("SAML10/L11: failed to enter command loop "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 5. Issue chip-erase command */
+	retval = target_write_u32(target, SAMD_DSU + SAMD_DSU_BCC0,
+			SAMD_DEBUGGER_CMD_CHIPERASE);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("SAML10/L11: failed to write CHIPERASE command to BCC0");
+		return retval;
+	}
+
+	/* 6a. Wait for erase to start (BCC1 == ERASE_BUSY) */
+	timeout_ms = 500;
+	ts_start = timeval_ms();
+	do {
+		retval = target_read_u32(target, SAMD_DSU + SAMD_DSU_BCC1, &bcc1);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("SAML10/L11: failed to read BCC1 during erase-start poll");
+			return retval;
+		}
+		if (bcc1 == SAMD_BCC1_REPLY_ERASE_BUSY)
+			break;
+		keep_alive();
+	} while (timeval_ms() - ts_start < timeout_ms);
+
+	if (bcc1 != SAMD_BCC1_REPLY_ERASE_BUSY) {
+		LOG_ERROR("SAML10/L11: chip erase did not start "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 6b. Wait for erase to complete (BCC1 changes from ERASE_BUSY) */
+	timeout_ms = 10000;
+	ts_start = timeval_ms();
+	do {
+		retval = target_read_u32(target, SAMD_DSU + SAMD_DSU_BCC1, &bcc1);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("SAML10/L11: failed to read BCC1 during erase-complete poll");
+			return retval;
+		}
+		if (bcc1 != SAMD_BCC1_REPLY_ERASE_BUSY)
+			break;
+		keep_alive();
+	} while (timeval_ms() - ts_start < timeout_ms);
+
+	if (bcc1 == SAMD_BCC1_REPLY_ERASE_BUSY) {
+		LOG_ERROR("SAML10/L11: chip erase timed out");
+		return ERROR_FAIL;
+	}
+	if (bcc1 != SAMD_BCC1_REPLY_ERASE_OK) {
+		LOG_ERROR("SAML10/L11: chip erase failed (BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 7. Return to park state (equivalent to sequences.xml Sequence(ResetToPark)) */
+	return samdl1x_reset_to_park(target, NULL);
+}
+
 FLASH_BANK_COMMAND_HANDLER(samd_flash_bank_command)
 {
 	if (bank->base != SAMD_FLASH) {
@@ -970,7 +1327,24 @@ COMMAND_HANDLER(samd_handle_chip_erase_command)
 	int res = ERROR_FAIL;
 
 	if (target) {
-		/* Enable access to the DSU by disabling the write protect bit */
+		/* Determine if this is a SAML10/L11 requiring the BCC mailbox erase */
+		uint32_t did = 0;
+		const struct samd_family *family = NULL;
+		if (target_read_u32(target, SAMD_DSU + SAMD_DSU_DID, &did) == ERROR_OK)
+			family = samd_find_family(did);
+
+		if (family && family->processor == SAMD_PROCESSOR_M23) {
+			/* SAML10/L11: use boot-ROM BCC mailbox chip-erase sequence */
+			res = samdl1x_chip_erase(target);
+			if (res == ERROR_OK)
+				command_print(CMD, "chip erase completed");
+			else
+				command_print(CMD, "chip erase failed");
+			return res;
+		}
+
+		/* Legacy path (SAMD/SAMC/SAML21/SAML22):
+		 * Enable access to the DSU by disabling the write protect bit */
 		target_write_u32(target, SAMD_PAC1, (1<<1));
 		/* intentionally without error checking - not accessible on secured chip */
 
@@ -1208,10 +1582,29 @@ COMMAND_HANDLER(samd_handle_reset_deassert)
 		/* do not return on error here, releasing DSU reset is more important */
 	}
 
-	/* clear CPU Reset Phase Extension bit */
-	int retval2 = target_write_u8(target, SAMD_DSU + SAMD_DSU_STATUSA, (1<<1));
-	if (retval2 != ERROR_OK)
-		return retval2;
+	/* Determine whether this is a SAML10/L11 (Cortex-M23) requiring the
+	 * full DSU boot-ROM mailbox handshake to release reset extension.
+	 * The BCC handshake is unconditional HW behaviour for M23 -- it is
+	 * independent of the reset_halt / SRST configuration above. */
+	uint32_t did = 0;
+	const struct samd_family *family = NULL;
+	if (target_read_u32(target, SAMD_DSU + SAMD_DSU_DID, &did) == ERROR_OK)
+		family = samd_find_family(did);
+
+	bool has_dal = (family != NULL && family->processor == SAMD_PROCESSOR_M23);
+
+	if (has_dal) {
+		/* SAML10/L11: perform BCC handshake to exit reset extension */
+		int retval2 = samdl1x_reset_to_park(target, NULL);
+		if (retval2 != ERROR_OK)
+			return retval2;
+	} else {
+		/* Legacy SAMD/SAMC/SAML21/SAML22: W1C clear CPU Reset Phase Extension bit */
+		int retval2 = target_write_u8(target,
+				SAMD_DSU + SAMD_DSU_STATUSA, (1 << 1));
+		if (retval2 != ERROR_OK)
+			return retval2;
+	}
 
 	return retval;
 }
