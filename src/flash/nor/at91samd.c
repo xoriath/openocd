@@ -154,6 +154,20 @@
 #define SAMD_SERIES_CMLS_6   0x06
 #define SAMD_SERIES_CMLS_7   0x07
 
+/* SAMHA0/SAMHA1 placeholder family/series identifiers.
+ * Note: SAMDA1 and SAMR30/34/35 (SAMR3x) are already fully supported via the existing
+ * samd21_parts[] and saml21_parts[] tables under the SAMD21/SAML21 family rows
+ * (SAMDA1 at DEVSEL 0x29-0x31 and 0x64-0x6C; SAMR30 at 0x1E-0x1F, SAMR34/R35 at 0x28+).
+ * They do not need a forced-override entry here.
+ * These values are NEVER matched by samd_find_family() via DID lookup; they exist
+ * solely to anchor rows in samd_families[] for the forced_family override mechanism.
+ * Values chosen from unused range (0x17-0x18 / 0x37-0x38) to avoid collisions with
+ * real DID fields and with existing placeholder macros (0x1A-0x1F already used). */
+#define SAMD_FAMILY_HA0   0x18  /* placeholder for SAMHA0                  */
+#define SAMD_SERIES_HA0   0x38
+#define SAMD_FAMILY_HA1   0x17  /* placeholder for SAMHA1                  */
+#define SAMD_SERIES_HA1   0x37
+
 /* Device ID macros */
 #define SAMD_GET_PROCESSOR(id) (id >> 28)
 #define SAMD_GET_FAMILY(id) (((id >> 23) & 0x1F))
@@ -481,6 +495,37 @@ static const struct samd_part pic32cmmc_parts[] = {
 	{ 0x07, "PIC32CM6408MC00048",  64,  8 },
 };
 
+/* Known SAMHA0 parts requiring forced-variant-name override.
+ * Cortex-M0+, legacy DSU path, no BCC mailbox.
+ * No DID auto-probe: variant must be specified via the mandatory Tcl variant-name arg.
+ * id values are internal placeholders, not real DID DEVSEL values. */
+static const struct samd_part samha0_parts[] = {
+	{ 0x0, "ATSAMHA0E14AB",  16,  4 },
+	{ 0x1, "ATSAMHA0E15AB",  32,  4 },
+	{ 0x2, "ATSAMHA0E16AB",  64,  8 },
+	{ 0x3, "ATSAMHA0G14AB",  16,  4 },
+	{ 0x4, "ATSAMHA0G15AB",  32,  4 },
+	{ 0x5, "ATSAMHA0G16AB",  64,  8 },
+	{ 0x6, "ATSAMHA0G17AB", 128, 16 },
+};
+
+/* Known SAMHA1 parts requiring forced-variant-name override.
+ * Cortex-M0+, legacy DSU path, no BCC mailbox.
+ * No DID auto-probe: variant must be specified via the mandatory Tcl variant-name arg.
+ * id values are internal placeholders, not real DID DEVSEL values. */
+static const struct samd_part samha1_parts[] = {
+	{ 0x0, "ATSAMHA1G14A",   16,  4 },
+	{ 0x1, "ATSAMHA1G15A",   32,  4 },
+	{ 0x2, "ATSAMHA1G16A",   64,  8 },
+	{ 0x3, "ATSAMHA1E14AB",  16,  4 },
+	{ 0x4, "ATSAMHA1E15AB",  32,  4 },
+	{ 0x5, "ATSAMHA1E16AB",  64,  8 },
+	{ 0x6, "ATSAMHA1G14AB",  16,  4 },
+	{ 0x7, "ATSAMHA1G15AB",  32,  4 },
+	{ 0x8, "ATSAMHA1G16AB",  64,  8 },
+	{ 0x9, "ATSAMHA1G17AB", 128, 16 },
+};
+
 /* Known SAMC20 parts. */
 static const struct samd_part samc20_parts[] = {
 	{ 0x00, "SAMC20J18A", 256, 32 },
@@ -694,6 +739,18 @@ static const struct samd_family samd_families[] = {
 	 * Real DID: FAMILY_C, SERIES 7 -- DID auto-probe works. */
 	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_CMMC,
 		pic32cmmc_parts, ARRAY_SIZE(pic32cmmc_parts),
+		0xFFFF03FFFC01FF77ULL,
+		.has_bootrom_dal = false, .dsu_layout = NULL },
+	/* SAMHA0: Cortex-M0+, legacy DSU path, no BCC.
+	 * Placeholder PROCESSOR/FAMILY/SERIES -- never matched by DID auto-probe. */
+	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_HA0, SAMD_SERIES_HA0,
+		samha0_parts, ARRAY_SIZE(samha0_parts),
+		0xFFFF03FFFC01FF77ULL,
+		.has_bootrom_dal = false, .dsu_layout = NULL },
+	/* SAMHA1: Cortex-M0+, legacy DSU path, no BCC.
+	 * Placeholder PROCESSOR/FAMILY/SERIES -- never matched by DID auto-probe. */
+	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_HA1, SAMD_SERIES_HA1,
+		samha1_parts, ARRAY_SIZE(samha1_parts),
 		0xFFFF03FFFC01FF77ULL,
 		.has_bootrom_dal = false, .dsu_layout = NULL },
 };
@@ -2011,11 +2068,13 @@ FLASH_BANK_COMMAND_HANDLER(samd_flash_bank_command)
 		static const struct samd_part * const forced_tbls[] = {
 			pic32cmpl_parts, pic32cmle_parts, pic32cmls_parts,
 			pic32cmgv_parts, pic32cmjh_parts, pic32cmmc_parts,
+			samha0_parts, samha1_parts,
 		};
 		static const size_t forced_tbl_sizes[] = {
 			ARRAY_SIZE(pic32cmpl_parts), ARRAY_SIZE(pic32cmle_parts),
 			ARRAY_SIZE(pic32cmls_parts), ARRAY_SIZE(pic32cmgv_parts),
 			ARRAY_SIZE(pic32cmjh_parts), ARRAY_SIZE(pic32cmmc_parts),
+			ARRAY_SIZE(samha0_parts), ARRAY_SIZE(samha1_parts),
 		};
 		for (size_t t = 0; t < ARRAY_SIZE(forced_tbls) && !chip->forced_part; t++) {
 			for (size_t i = 0; i < forced_tbl_sizes[t]; i++) {
@@ -2041,6 +2100,8 @@ FLASH_BANK_COMMAND_HANDLER(samd_flash_bank_command)
 				"GV e.g.: PIC32CM1602GV00032..PIC32CM3204GV00064; "
 				"JH e.g.: PIC32CM2532JH00032..PIC32CM5164JH01100; "
 				"MC e.g.: PIC32CM1216MC00032..PIC32CM6408MC00048; "
+				"SAMHA0 e.g.: ATSAMHA0E14AB..ATSAMHA0G17AB; "
+				"SAMHA1 e.g.: ATSAMHA1G14A..ATSAMHA1G17AB; "
 				"or another registered variant name)", variant);
 			free(chip);
 			return ERROR_FAIL;
