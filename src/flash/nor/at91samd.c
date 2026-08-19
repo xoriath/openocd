@@ -50,6 +50,21 @@
 /* PIC32CM-PL10 BootROM reply code after DEBUGGER_CMD_EXIT */
 #define SAMD_PL10_BOOTROM_STATUS_BOOTOK   0x4UL
 
+/* PIC32CM-LE/LS "ALL" (full-chip, key-gated) erase command code, distinct
+ * from SAMD_DEBUGGER_CMD_CHIPERASE (0xE3, the no-key non-secure-only variant
+ * shared with SAML10/L11's chip-erase). */
+#define SAMD_DEBUGGER_CMD_CHIPERASE_ALL	0x444247E2UL
+/* Default CEKEY value used when BOCOR has not been custom-provisioned
+ * (matches the MPLAB X debugger scripts' "x.erase.key" default). */
+#define SAMD_LE_LS_CHIPERASE_DEFAULT_KEY	0xFFFFFFFFUL
+
+/* PIC32CM-PL10 BootROM reply/status codes for the interactive-mode chip-erase
+ * challenge/response handshake (distinct small-integer domain from the
+ * 0xECxxxxxx codes used by SAML10/L11/LE/LS). */
+#define SAMD_PL10_STATUS_CMD_VALID	0x5UL
+#define SAMD_PL10_STATUS_CHALLENGE	0xBUL
+#define SAMD_PL10_STATUS_OK		0x9UL
+
 #define SAMD_NVMCTRL_CTRLA		0x00	/* NVM control A register */
 #define SAMD_NVMCTRL_CTRLB		0x04	/* NVM control B register */
 #define SAMD_NVMCTRL_PARAM		0x08	/* NVM parameters register */
@@ -109,6 +124,35 @@
  * set by the mandatory variant-name Tcl argument in flash_bank_command. */
 #define SAMD_FAMILY_PL    0x1F  /* placeholder, not a real DID field value */
 #define SAMD_SERIES_PL10  0x3F  /* placeholder, not a real DID field value */
+
+/* PIC32CM-GV placeholder family/series identifiers.
+ * PIC32CM-GV's real DSU_DID decodes to the SAME (processor, family, series)
+ * triple as SAMD20 (M0+, FAMILY_D, SERIES_20), so it cannot get its own
+ * samd_families[] row without colliding with the existing SAMD20 entry.
+ * This placeholder is NEVER matched by samd_find_family() via DID lookup;
+ * it only anchors a row for the forced_family override mechanism. */
+#define SAMD_FAMILY_CMGV  0x1E  /* placeholder for PIC32CM-GV  */
+#define SAMD_SERIES_CMGV  0x3E
+
+/* PIC32CM-JH/MC real family/series identifiers.
+ * Both decode to FAMILY_C with SERIES values (6, 7) that are unused by any
+ * existing SAMC row, so DID auto-probe works for these families. */
+#define SAMD_SERIES_CMJH  0x06
+#define SAMD_SERIES_CMMC  0x07
+
+/* PIC32CM-LE/LS real family/series identifiers (FAMILY_L, PROCESSOR_M23).
+ * LE decodes to a single SERIES (5).  LS spans three SERIES values (5, 6, 7)
+ * because different flash-size sub-families use different DSU_DID SERIES
+ * fields; all three rows point at the same pic32cmls_parts[] table.
+ * SERIES 5 is shared between LE and LS's 1216-size SKUs: both variants have
+ * an identical DSU_DID for that flash size, so auto-probe cannot tell them
+ * apart by DID alone.  This is harmless for flashing since geometry and the
+ * DAL reset-extension protocol are identical either way; only the part name
+ * reported in the log may be wrong. */
+#define SAMD_SERIES_CMLE     0x05
+#define SAMD_SERIES_CMLS_5   0x05
+#define SAMD_SERIES_CMLS_6   0x06
+#define SAMD_SERIES_CMLS_7   0x07
 
 /* Device ID macros */
 #define SAMD_GET_PROCESSOR(id) (id >> 28)
@@ -341,6 +385,102 @@ static const struct samd_part pic32cmpl_parts[] = {
 	{ 0x0D, "PIC32CM1216PL10064", 128, 16 },
 };
 
+/* Known PIC32CM-LE parts (Cortex-M23, BCC-mailbox DAL reset extension).
+ * DSU layout is identical to SAML10/L11; reuses saml1x_dsu_layout directly.
+ * id = real DID DEVSEL byte; DID auto-probe works for this family.
+ * Chip erase uses the "ALL" BootROM command with the factory-default CEKEY;
+ * see samd_bcc_chip_erase_all().  Devices with a custom-provisioned CEKEY
+ * will fail chip-erase with a clear error (use MPLAB IPE in that case).
+ * DID for the 1216 variants collides with the equivalent PIC32CM-LS parts;
+ * harmless for flashing since geometry is identical either way. */
+static const struct samd_part pic32cmle_parts[] = {
+	{ 0x0A, "PIC32CM1216LE00032", 128, 16 },
+	{ 0x0B, "PIC32CM1216LE00048", 128, 16 },
+	{ 0x06, "PIC32CM2532LE00048", 256, 32 },
+	{ 0x05, "PIC32CM2532LE00064", 256, 32 },
+	{ 0x04, "PIC32CM2532LE00100", 256, 32 },
+	{ 0x02, "PIC32CM5164LE00048", 512, 64 },
+	{ 0x01, "PIC32CM5164LE00064", 512, 64 },
+	{ 0x00, "PIC32CM5164LE00100", 512, 64 },
+};
+
+/* Known PIC32CM-LS parts (Cortex-M23, BCC-mailbox DAL reset extension).
+ * DSU layout is identical to SAML10/L11; reuses saml1x_dsu_layout directly.
+ * id = real DID DEVSEL byte; DID auto-probe works via the three
+ * SAMD_SERIES_CMLS_* rows in samd_families[] (one per flash-size group).
+ * TODO: PIC32CM-LS has dual NVMCTRL instances selected by DAL (DSU_STATUSB
+ * bits[1:0]); this DAL-aware NVMCTRL offset selection is not implemented, so
+ * flash operations only work correctly at DAL=full-access.
+ * Chip erase uses the "ALL" BootROM command with the factory-default CEKEY;
+ * see samd_bcc_chip_erase_all().  Devices with a custom-provisioned CEKEY
+ * will fail chip-erase with a clear error (use MPLAB IPE in that case).
+ * LS60 variants add hardware crypto/PKC (Trust Platform); their DEVSEL bytes
+ * overlap with the LS00 5164 entries but live under a different SERIES. */
+static const struct samd_part pic32cmls_parts[] = {
+	{ 0x0A, "PIC32CM1216LS00032", 128, 16 },
+	{ 0x0B, "PIC32CM1216LS00048", 128, 16 },
+	{ 0x06, "PIC32CM2532LS00048", 256, 32 },
+	{ 0x05, "PIC32CM2532LS00064", 256, 32 },
+	{ 0x04, "PIC32CM2532LS00100", 256, 32 },
+	{ 0x02, "PIC32CM5164LS00048", 512, 64 },
+	{ 0x01, "PIC32CM5164LS00064", 512, 64 },
+	{ 0x00, "PIC32CM5164LS00100", 512, 64 },
+	{ 0x02, "PIC32CM5164LS60048", 512, 64 },
+	{ 0x01, "PIC32CM5164LS60064", 512, 64 },
+	{ 0x00, "PIC32CM5164LS60100", 512, 64 },
+};
+
+/* Known PIC32CM-GV parts (Cortex-M0+, legacy DSU path, no BCC mailbox).
+ * Real DID collides with SAMD20's, so this family has no DID auto-probe;
+ * variant must be specified via the mandatory Tcl variant-name arg.
+ * id values are internal placeholders, not real DID DEVSEL values. */
+static const struct samd_part pic32cmgv_parts[] = {
+	{ 0x0, "PIC32CM1602GV00032", 16, 2 },
+	{ 0x1, "PIC32CM1602GV00048", 16, 2 },
+	{ 0x2, "PIC32CM1602GV00064", 16, 2 },
+	{ 0x3, "PIC32CM3204GV00032", 32, 4 },
+	{ 0x4, "PIC32CM3204GV00048", 32, 4 },
+	{ 0x5, "PIC32CM3204GV00064", 32, 4 },
+};
+
+/* Known PIC32CM-JH parts (Cortex-M0+, legacy DSU path, no BCC mailbox).
+ * id = real DID DEVSEL byte; DID auto-probe works for this family. */
+static const struct samd_part pic32cmjh_parts[] = {
+	{ 0x16, "PIC32CM2532JH00032", 256, 32 },
+	{ 0x13, "PIC32CM2532JH00048", 256, 32 },
+	{ 0x10, "PIC32CM2532JH00064", 256, 32 },
+	{ 0x0D, "PIC32CM2532JH00100", 256, 32 },
+	{ 0x15, "PIC32CM5164JH00032", 512, 64 },
+	{ 0x14, "PIC32CM5164JH00048", 512, 64 },
+	{ 0x0F, "PIC32CM5164JH00064", 512, 64 },
+	{ 0x0E, "PIC32CM5164JH00100", 512, 64 },
+	{ 0x07, "PIC32CM2532JH01032", 256, 32 },
+	{ 0x06, "PIC32CM2532JH01048", 256, 32 },
+	{ 0x05, "PIC32CM2532JH01064", 256, 32 },
+	{ 0x04, "PIC32CM2532JH01100", 256, 32 },
+	{ 0x03, "PIC32CM5164JH01032", 512, 64 },
+	{ 0x02, "PIC32CM5164JH01048", 512, 64 },
+	{ 0x01, "PIC32CM5164JH01064", 512, 64 },
+	{ 0x00, "PIC32CM5164JH01100", 512, 64 },
+	{ 0x0B, "PIC32CM1216JH01032", 128, 16 },
+	{ 0x0A, "PIC32CM1216JH01048", 128, 16 },
+	{ 0x1D, "PIC32CM3204JH00032",  32,  4 },
+	{ 0x1B, "PIC32CM3204JH00048",  32,  4 },
+	{ 0x19, "PIC32CM3204JH00064",  32,  4 },
+	{ 0x1C, "PIC32CM6408JH00032",  64,  8 },
+	{ 0x1A, "PIC32CM6408JH00048",  64,  8 },
+	{ 0x18, "PIC32CM6408JH00064",  64,  8 },
+};
+
+/* Known PIC32CM-MC parts (Cortex-M0+, legacy DSU path, no BCC mailbox).
+ * id = real DID DEVSEL byte; DID auto-probe works for this family. */
+static const struct samd_part pic32cmmc_parts[] = {
+	{ 0x00, "PIC32CM1216MC00032", 128, 16 },
+	{ 0x06, "PIC32CM1216MC00048", 128, 16 },
+	{ 0x01, "PIC32CM6408MC00032",  64,  8 },
+	{ 0x07, "PIC32CM6408MC00048",  64,  8 },
+};
+
 /* Known SAMC20 parts. */
 static const struct samd_part samc20_parts[] = {
 	{ 0x00, "SAMC20J18A", 256, 32 },
@@ -449,7 +589,7 @@ static const struct samd_dsu_layout pic32cmpl_dsu_layout = {
 	.bootok_reply         = SAMD_PL10_BOOTROM_STATUS_BOOTOK,  /* 0x4UL */
 	.locked_reply         = 0,                 /* locked condition not separately identified */
 	.statusab_is_32bit    = true,
-	.chip_erase_supported = false,             /* TODO: HMAC-challenge chip-erase not implemented */
+	.chip_erase_supported = true,
 };
 
 /* Known SAMD families */
@@ -511,6 +651,51 @@ static const struct samd_family samd_families[] = {
 		pic32cmpl_parts, ARRAY_SIZE(pic32cmpl_parts),
 		0x3FE0000000000000ULL,
 		.has_bootrom_dal = true, .dsu_layout = &pic32cmpl_dsu_layout },
+	/* PIC32CM-LE: Cortex-M23, BCC-mailbox DAL handshake, reuses saml1x_dsu_layout.
+	 * Real DID: FAMILY_L, SERIES 5 -- DID auto-probe works.  (1216-size SKUs
+	 * share an identical DID with PIC32CM-LS's 1216 SKUs; see note above.) */
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_CMLE,
+		pic32cmle_parts, ARRAY_SIZE(pic32cmle_parts),
+		0xFFFFFC0001FF0040ULL,
+		.has_bootrom_dal = true, .dsu_layout = &saml1x_dsu_layout },
+	/* PIC32CM-LS: Cortex-M23, BCC-mailbox DAL handshake, reuses saml1x_dsu_layout.
+	 * Real DID spans three SERIES values depending on flash size; all three
+	 * rows share the same pic32cmls_parts[] table.  DID auto-probe works.
+	 * NOTE: dual NVMCTRL instances (DAL-gated offset) not implemented; see parts table. */
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_CMLS_5,
+		pic32cmls_parts, ARRAY_SIZE(pic32cmls_parts),
+		0xFFFFE40001FF0040ULL,
+		.has_bootrom_dal = true, .dsu_layout = &saml1x_dsu_layout,
+		.needs_ram_xn_clear = true },
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_CMLS_6,
+		pic32cmls_parts, ARRAY_SIZE(pic32cmls_parts),
+		0xFFFFE40001FF0040ULL,
+		.has_bootrom_dal = true, .dsu_layout = &saml1x_dsu_layout,
+		.needs_ram_xn_clear = true },
+	{ SAMD_PROCESSOR_M23, SAMD_FAMILY_L, SAMD_SERIES_CMLS_7,
+		pic32cmls_parts, ARRAY_SIZE(pic32cmls_parts),
+		0xFFFFE40001FF0040ULL,
+		.has_bootrom_dal = true, .dsu_layout = &saml1x_dsu_layout,
+		.needs_ram_xn_clear = true },
+	/* PIC32CM-GV: Cortex-M0+, legacy DSU path, no BCC.
+	 * Placeholder PROCESSOR/FAMILY/SERIES -- never matched by DID auto-probe.
+	 * (Real DID collides with SAMD20's; see SAMD_FAMILY_CMGV comment above.) */
+	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_CMGV, SAMD_SERIES_CMGV,
+		pic32cmgv_parts, ARRAY_SIZE(pic32cmgv_parts),
+		0xFFFF03FFFC01FF77ULL,
+		.has_bootrom_dal = false, .dsu_layout = NULL },
+	/* PIC32CM-JH: Cortex-M0+, legacy DSU path, no BCC.
+	 * Real DID: FAMILY_C, SERIES 6 -- DID auto-probe works. */
+	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_CMJH,
+		pic32cmjh_parts, ARRAY_SIZE(pic32cmjh_parts),
+		0xFFFF03FFFC01FF77ULL,
+		.has_bootrom_dal = false, .dsu_layout = NULL },
+	/* PIC32CM-MC: Cortex-M0+, legacy DSU path, no BCC.
+	 * Real DID: FAMILY_C, SERIES 7 -- DID auto-probe works. */
+	{ SAMD_PROCESSOR_M0, SAMD_FAMILY_C, SAMD_SERIES_CMMC,
+		pic32cmmc_parts, ARRAY_SIZE(pic32cmmc_parts),
+		0xFFFF03FFFC01FF77ULL,
+		.has_bootrom_dal = false, .dsu_layout = NULL },
 };
 
 struct samd_info {
@@ -524,6 +709,8 @@ struct samd_info {
 	const struct samd_family *family;         /* resolved family (from DID or forced_family) */
 	const struct samd_part *forced_part;      /* non-NULL: variant-name arg bypassed DID probe */
 	const struct samd_family *forced_family;  /* non-NULL: variant-name arg bypassed DID probe */
+	bool cekey_set;                           /* true: cekey[] was supplied on the flash bank line */
+	uint32_t cekey[4];                        /* PIC32CM-LE/LS custom CEKEY (from BOCOR provisioning) */
 	struct target *target;
 };
 
@@ -1496,6 +1683,298 @@ static int samdl1x_chip_erase(struct target *target)
 	return samd_bcc_reset_to_park(target, &saml1x_dsu_layout, NULL);
 }
 
+/**
+ * Poll BCC1 until it equals @a expect or @a timeout_ms elapses.
+ */
+static int samd_bcc_poll_bcc1(struct target *target, uint32_t bcc1_addr,
+		uint32_t expect, int timeout_ms, uint32_t *last_out)
+{
+	int retval;
+	uint32_t bcc1 = 0;
+	int64_t ts_start = timeval_ms();
+
+	do {
+		retval = target_read_u32(target, bcc1_addr, &bcc1);
+		if (retval != ERROR_OK)
+			return retval;
+		if (bcc1 == expect)
+			break;
+		keep_alive();
+	} while (timeval_ms() - ts_start < timeout_ms);
+
+	if (last_out)
+		*last_out = bcc1;
+	return (bcc1 == expect) ? ERROR_OK : ERROR_FAIL;
+}
+
+/**
+ * Full-chip erase for PIC32CM-LE/LS via the "ALL" (key-gated) BootROM
+ * command (0xE2).  Protocol confirmed from the MPLAB X DFP debugger
+ * scripts (icd4_cortex-m23.py, PIC32CM-LE_DFP/PIC32CM-LS_DFP): the same
+ * reset-extension/IMODE-entry handshake as samdl1x_chip_erase(), plus a
+ * 4-word key sent via BCC0 with a per-word BCCD0-clear handshake.  The
+ * key is a static per-device value stored in BOCOR (not a computed HMAC
+ * or challenge response); this implementation uses the documented
+ * factory-default key (all 0xFFFFFFFF words), which is what an
+ * unprovisioned/default device expects.  If a device has been
+ * provisioned with a custom CEKEY, this erase will fail with a clear
+ * error rather than silently doing the wrong thing.
+ */
+static int samd_bcc_chip_erase_all(struct target *target,
+		const struct samd_dsu_layout *layout, const uint32_t key[4])
+{
+	int retval;
+	uint8_t statusa_u8;
+	uint32_t statusb, bcc1;
+
+	/* 1. Enter reset extension */
+	retval = samd_bcc_reset_extension(target);
+	if (retval != ERROR_OK)
+		return retval;
+
+	/* 2. Read STATUSA (8-bit for SAML10/L11-layout parts), verify CRSTEXT */
+	retval = target_read_u8(target, layout->statusa_addr, &statusa_u8);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to read DSU STATUSA");
+		return retval;
+	}
+	if (!(statusa_u8 & layout->crstext_mask)) {
+		LOG_ERROR("PIC32CM-LE/LS: could not enter reset extension (CRSTEXT not set)");
+		return ERROR_FAIL;
+	}
+
+	/* 3. W1C clear CRSTEXT, delay 5 ms */
+	retval = target_write_u8(target, layout->statusa_addr, (uint8_t)layout->crstext_mask);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to clear CRSTEXT");
+		return retval;
+	}
+	alive_sleep(5);
+
+	/* 4. If the BootROM already has a reply pending, it indicates a prior
+	 * user-page validation failure -- bail out rather than continuing. */
+	retval = samd_dsu_read_statusb(target, layout, &statusb);
+	if (retval != ERROR_OK)
+		return retval;
+	if (statusb & layout->bootrom_ready_mask) {
+		retval = target_read_u32(target, layout->bcc1_addr, &bcc1);
+		if (retval != ERROR_OK)
+			return retval;
+		if (bcc1 != 0) {
+			LOG_ERROR("PIC32CM-LE/LS: user page validation failed "
+				"(BCC1=0x%08" PRIx32 ")", bcc1);
+			return ERROR_FAIL;
+		}
+	}
+
+	/* 5. Enter interactive mode */
+	retval = target_write_u32(target, layout->bcc0_addr, SAMD_DEBUGGER_CMD_IMODE);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to write IMODE command to BCC0");
+		return retval;
+	}
+	retval = target_read_u32(target, layout->bcc1_addr, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to read BCC1 after IMODE command");
+		return retval;
+	}
+	if (bcc1 != SAMD_BCC1_REPLY_IMODE_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to enter command loop "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 6. Issue the "ALL" chip-erase command */
+	retval = target_write_u32(target, layout->bcc0_addr, SAMD_DEBUGGER_CMD_CHIPERASE_ALL);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to write chip-erase command to BCC0");
+		return retval;
+	}
+	retval = target_read_u32(target, layout->bcc1_addr, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: failed to read BCC1 after chip-erase command");
+		return retval;
+	}
+	if (bcc1 != SAMD_BCC1_REPLY_ERASE_BUSY) {
+		LOG_ERROR("PIC32CM-LE/LS: chip-erase command rejected "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 7. Send the 4-word CEKEY, one word at a time, waiting for the
+	 * BootROM to clear BCCD0 (bit 0x40 of STATUSB) after each word. */
+	for (int i = 0; i < 4; i++) {
+		retval = target_write_u32(target, layout->bcc0_addr, key[i]);
+		if (retval != ERROR_OK) {
+			LOG_ERROR("PIC32CM-LE/LS: failed to write CEKEY word %d", i);
+			return retval;
+		}
+
+		int64_t ts_start = timeval_ms();
+		do {
+			retval = samd_dsu_read_statusb(target, layout, &statusb);
+			if (retval != ERROR_OK)
+				return retval;
+			if (!(statusb & 0x40))
+				break;
+			keep_alive();
+		} while (timeval_ms() - ts_start < 500);
+		if (statusb & 0x40) {
+			LOG_ERROR("PIC32CM-LE/LS: BootROM did not accept CEKEY word %d "
+				"(wrong key for this device?)", i);
+			return ERROR_FAIL;
+		}
+	}
+
+	/* 8. Wait for the erase to finish (BCC1 changes away from ERASE_BUSY).
+	 * samd_bcc_poll_bcc1() only waits for a specific value, so poll manually
+	 * here since we're waiting for the value to change away from one. */
+	int64_t ts_start = timeval_ms();
+	do {
+		retval = target_read_u32(target, layout->bcc1_addr, &bcc1);
+		if (retval != ERROR_OK)
+			return retval;
+		if (bcc1 != SAMD_BCC1_REPLY_ERASE_BUSY && bcc1 != 0)
+			break;
+		keep_alive();
+	} while (timeval_ms() - ts_start < 30000);
+
+	if (bcc1 != SAMD_BCC1_REPLY_ERASE_OK) {
+		LOG_ERROR("PIC32CM-LE/LS: chip erase failed (BCC1=0x%08" PRIx32 ")", bcc1);
+		return ERROR_FAIL;
+	}
+
+	/* 9. Return to park state */
+	return samd_bcc_reset_to_park(target, layout, NULL);
+}
+
+/**
+ * Full-chip erase for PIC32CM-PL10 via the interactive-mode CMD_CE_ALL
+ * (0xE3) BootROM command.  Protocol confirmed from the MPLAB X DFP
+ * debugger scripts (icd4_cortex-m0plus.py, PIC32CM-PL_DFP): unlike
+ * SAML10/L11/LE/LS, PL10 uses a small-integer status-code domain
+ * (SAMD_PL10_STATUS_*) instead of the 0xECxxxxxx codes, and its
+ * "challenge/response" step is a fixed, non-secret handshake -- four
+ * reads of BCC1 (values discarded) followed by eight literal zero
+ * writes to BCC0, each gated on a STATUSB bit rather than any
+ * device-specific value.  No key or HMAC is involved.
+ */
+static int pic32cmpl_chip_erase(struct target *target)
+{
+	int retval;
+	uint32_t statusa, statusb, bcc1;
+	const struct samd_dsu_layout *layout = &pic32cmpl_dsu_layout;
+
+	/* 1. Enter reset extension */
+	retval = samd_bcc_reset_extension(target);
+	if (retval != ERROR_OK)
+		return retval;
+
+	/* 2. Read STATUSA (32-bit for PIC32CM-PL10), verify CRSTEXT, clear it */
+	retval = samd_dsu_read_statusa(target, layout, &statusa);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: failed to read DSU STATUSA");
+		return retval;
+	}
+	if (!(statusa & layout->crstext_mask)) {
+		LOG_ERROR("PIC32CM-PL10: could not enter reset extension (CRSTEXT not set)");
+		return ERROR_FAIL;
+	}
+	retval = samd_dsu_write_statusa(target, layout, layout->crstext_mask);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: failed to clear CRSTEXT");
+		return retval;
+	}
+	alive_sleep(5);
+
+	/* 3. Enter interactive mode; PL10 replies with CMD_VALID (0x5), not
+	 * the IMODE_OK (0xEC000020) code used by SAML10/L11/LE/LS. */
+	retval = target_write_u32(target, layout->bcc0_addr, SAMD_DEBUGGER_CMD_IMODE);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: failed to write IMODE command to BCC0");
+		return retval;
+	}
+	retval = samd_bcc_poll_bcc1(target, layout->bcc1_addr, SAMD_PL10_STATUS_CMD_VALID,
+			5000, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: failed to enter interactive mode "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return retval;
+	}
+
+	/* 4. Issue CMD_CE_ALL; wait for the CHALLENGE status */
+	retval = target_write_u32(target, layout->bcc0_addr, SAMD_DEBUGGER_CMD_CHIPERASE);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: failed to write chip-erase command to BCC0");
+		return retval;
+	}
+	retval = samd_bcc_poll_bcc1(target, layout->bcc1_addr, SAMD_PL10_STATUS_CHALLENGE,
+			5000, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: chip-erase command rejected "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return retval;
+	}
+
+	/* 5. Fixed, non-secret challenge/response handshake: drain 4 words
+	 * from BCC1 (values unused), then send 8 literal zero words. */
+	for (int i = 0; i < 4; i++) {
+		int64_t ts_start = timeval_ms();
+		do {
+			retval = samd_dsu_read_statusb(target, layout, &statusb);
+			if (retval != ERROR_OK)
+				return retval;
+			if (statusb & layout->bootrom_ready_mask)
+				break;
+			keep_alive();
+		} while (timeval_ms() - ts_start < 5000);
+		if (!(statusb & layout->bootrom_ready_mask)) {
+			LOG_ERROR("PIC32CM-PL10: BootROM did not send full challenge string");
+			return ERROR_FAIL;
+		}
+		retval = target_read_u32(target, layout->bcc1_addr, &bcc1); /* discarded */
+		if (retval != ERROR_OK)
+			return retval;
+	}
+	for (int i = 0; i < 8; i++) {
+		int64_t ts_start = timeval_ms();
+		do {
+			retval = samd_dsu_read_statusb(target, layout, &statusb);
+			if (retval != ERROR_OK)
+				return retval;
+			if (!(statusb & 0x1))
+				break;
+			keep_alive();
+		} while (timeval_ms() - ts_start < 5000);
+		if (statusb & 0x1) {
+			LOG_ERROR("PIC32CM-PL10: BootROM did not accept challenge response");
+			return ERROR_FAIL;
+		}
+		retval = target_write_u32(target, layout->bcc0_addr, 0);
+		if (retval != ERROR_OK)
+			return retval;
+	}
+
+	/* 6. Wait for command acceptance, then for completion */
+	retval = samd_bcc_poll_bcc1(target, layout->bcc1_addr, SAMD_PL10_STATUS_CMD_VALID,
+			10000, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: chip erase not accepted "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return retval;
+	}
+	retval = samd_bcc_poll_bcc1(target, layout->bcc1_addr, SAMD_PL10_STATUS_OK,
+			60000, &bcc1);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("PIC32CM-PL10: chip erase failed or timed out "
+			"(BCC1=0x%08" PRIx32 ")", bcc1);
+		return retval;
+	}
+
+	/* 7. Return to park state */
+	return samd_bcc_reset_to_park(target, layout, NULL);
+}
+
 FLASH_BANK_COMMAND_HANDLER(samd_flash_bank_command)
 {
 	if (bank->base != SAMD_FLASH) {
@@ -1525,30 +2004,67 @@ FLASH_BANK_COMMAND_HANDLER(samd_flash_bank_command)
 		const char *variant = CMD_ARGV[7];
 		bool found = false;
 
-		for (size_t i = 0; i < ARRAY_SIZE(pic32cmpl_parts); i++) {
-			if (strcmp(pic32cmpl_parts[i].name, variant) == 0) {
-				chip->forced_part = &pic32cmpl_parts[i];
-				/* Find the matching samd_families[] row for PIC32CM-PL10 */
-				for (size_t fi = 0; fi < ARRAY_SIZE(samd_families); fi++) {
-					if (samd_families[fi].parts == pic32cmpl_parts) {
-						chip->forced_family = &samd_families[fi];
-						break;
+		/* Search all forced-override parts tables for the requested variant name.
+		 * Each entry in forced_tbls[] corresponds to a family whose parts are
+		 * identified by variant-name override rather than DID auto-probe.
+		 * The matching samd_families[] row is located by its parts pointer. */
+		static const struct samd_part * const forced_tbls[] = {
+			pic32cmpl_parts, pic32cmle_parts, pic32cmls_parts,
+			pic32cmgv_parts, pic32cmjh_parts, pic32cmmc_parts,
+		};
+		static const size_t forced_tbl_sizes[] = {
+			ARRAY_SIZE(pic32cmpl_parts), ARRAY_SIZE(pic32cmle_parts),
+			ARRAY_SIZE(pic32cmls_parts), ARRAY_SIZE(pic32cmgv_parts),
+			ARRAY_SIZE(pic32cmjh_parts), ARRAY_SIZE(pic32cmmc_parts),
+		};
+		for (size_t t = 0; t < ARRAY_SIZE(forced_tbls) && !chip->forced_part; t++) {
+			for (size_t i = 0; i < forced_tbl_sizes[t]; i++) {
+				if (strcmp(forced_tbls[t][i].name, variant) == 0) {
+					chip->forced_part = &forced_tbls[t][i];
+					for (size_t fi = 0; fi < ARRAY_SIZE(samd_families); fi++) {
+						if (samd_families[fi].parts == forced_tbls[t]) {
+							chip->forced_family = &samd_families[fi];
+							found = true;
+							break;
+						}
 					}
+					break;
 				}
-				found = true;
-				break;
 			}
 		}
 
 		if (!found) {
 			LOG_ERROR("at91samd: unknown variant name '%s' "
-				"(PIC32CM-PL10 accepts: PIC32CM6408PL10028..PIC32CM1216PL10064)",
-				variant);
+				"(PL10 e.g.: PIC32CM6408PL10028..PIC32CM1216PL10064; "
+				"LE e.g.: PIC32CM1216LE00032..PIC32CM5164LE00100; "
+				"LS e.g.: PIC32CM1216LS00032..PIC32CM5164LS60100; "
+				"GV e.g.: PIC32CM1602GV00032..PIC32CM3204GV00064; "
+				"JH e.g.: PIC32CM2532JH00032..PIC32CM5164JH01100; "
+				"MC e.g.: PIC32CM1216MC00032..PIC32CM6408MC00048; "
+				"or another registered variant name)", variant);
 			free(chip);
 			return ERROR_FAIL;
 		}
 		LOG_INFO("at91samd: using forced variant '%s' (DID auto-probe bypassed)",
 			variant);
+
+		/* Optional 4 more arguments: a custom CEKEY for PIC32CM-LE/LS full
+		 * chip-erase, for devices whose BOCOR was provisioned with a
+		 * non-default key.  If not supplied, chip-erase uses the factory
+		 * default (all 0xFFFFFFFF).  Ignored for families that don't use a
+		 * CEKEY. */
+		if (CMD_ARGC >= 12) {
+			for (int i = 0; i < 4; i++) {
+				int retval = parse_u32(CMD_ARGV[8 + i], &chip->cekey[i]);
+				if (retval != ERROR_OK) {
+					LOG_ERROR("at91samd: invalid CEKEY word '%s'", CMD_ARGV[8 + i]);
+					free(chip);
+					return retval;
+				}
+			}
+			chip->cekey_set = true;
+			LOG_INFO("at91samd: using custom CEKEY for chip-erase");
+		}
 	}
 
 	bank->driver_priv = chip;
@@ -1598,12 +2114,39 @@ COMMAND_HANDLER(samd_handle_chip_erase_command)
 		if (family && family->has_bootrom_dal) {
 			/* BCC mailbox device: check if chip-erase is supported */
 			if (!family->dsu_layout->chip_erase_supported) {
-				command_print(CMD, "chip-erase not supported for this device "
-					"(BootROM HMAC challenge protocol not implemented)");
+				command_print(CMD, "chip-erase not supported for this device");
 				return ERROR_FAIL;
 			}
-			/* SAML10/L11: use boot-ROM BCC mailbox chip-erase sequence */
-			res = samdl1x_chip_erase(target);
+			/* Dispatch to the correct BootROM chip-erase protocol.  All of
+			 * these share the has_bootrom_dal/saml1x_dsu_layout machinery
+			 * for reset-extension, but the actual erase command sequence
+			 * differs per family (see the function doc comments). */
+			if (family->parts == pic32cmpl_parts) {
+				res = pic32cmpl_chip_erase(target);
+			} else if (family->parts == pic32cmle_parts || family->parts == pic32cmls_parts) {
+				static const uint32_t default_key[4] = {
+					SAMD_LE_LS_CHIPERASE_DEFAULT_KEY, SAMD_LE_LS_CHIPERASE_DEFAULT_KEY,
+					SAMD_LE_LS_CHIPERASE_DEFAULT_KEY, SAMD_LE_LS_CHIPERASE_DEFAULT_KEY,
+				};
+				const uint32_t *key = default_key;
+
+				/* Use a custom CEKEY if one was supplied on the flash bank
+				 * command line (see samd_flash_bank_command). */
+				for (struct flash_bank *b = flash_bank_list(); b; b = b->next) {
+					if (b->target != target || !b->driver ||
+							strcmp(b->driver->name, "at91samd") != 0)
+						continue;
+					const struct samd_info *chip = b->driver_priv;
+					if (chip && chip->cekey_set)
+						key = chip->cekey;
+					break;
+				}
+
+				res = samd_bcc_chip_erase_all(target, family->dsu_layout, key);
+			} else {
+				res = samdl1x_chip_erase(target);
+			}
+
 			if (res == ERROR_OK)
 				command_print(CMD, "chip erase completed");
 			else
